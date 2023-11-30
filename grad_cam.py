@@ -79,18 +79,19 @@ class GradCAM:
     def buffer_clear(self):
         self.activations_and_grads.buffer_clear()
 
-    def __call__(self, input_tensor, expand_size):
+    def __call__(self, input_tensor, expand_size, label_indices=None):
         self.buffer_clear()
         self.model.eval()
         
         cam_stack=[]    
+        
         for batch_idx in range(input_tensor.shape[0]): # iteration w.r.t. batch
             self.model.zero_grad()
             img = input_tensor[batch_idx]
             img = img.unsqueeze(0) # (c, h, w) -> (b, c, h, w)
             output = self.activations_and_grads(img)[0] 
 
-            y_c = output[torch.argmax(output)] # GAP over channel
+            y_c = output[label_indices or torch.argmax(output)] # GAP over channel
             y_c.backward(retain_graph=True)
 
             activations = self.activations_and_grads.activations

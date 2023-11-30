@@ -284,34 +284,35 @@ def loss_fn_kd_nothresh(outputs, labels, teacher_outputs, params, student_heatma
     # Upsample each matrix in the batch
    # print("teacher heatmap batch shape "+str(teacher_heatmap_batch.shape))
     #print("student heatmap batch shape "+str(student_heatmap_batch.shape))
-    teachsample = teacher_heatmap_batch[0]
+   # teachsample = teacher_heatmap_batch[0]
     #print("teacher sample shape " +str(teachsample.shape))
-    studsample = student_heatmap_batch[0]
+    #studsample = student_heatmap_batch[0]
     #print("student sample shape "+str(studsample.shape))
-    student_heatmap_upsampled_batch = torch.empty((len(student_heatmap_batch), teachsample.shape[0], teachsample.shape[0]), dtype=student_heatmap_batch.dtype)
+    #student_heatmap_upsampled_batch = torch.empty((len(student_heatmap_batch), teachsample.shape[0], teachsample.shape[0]), dtype=student_heatmap_batch.dtype)
  
     #student_heatmap_upsampled_batch = student_heatmap_batch.clone().reshape((len(student_heatmap_batch), teachsample.shape[0], teachsample.shape[0]))
-    for i, matrix in enumerate(student_heatmap_batch):
-        student_heatmap_upsampled_batch[i] = upsample_matrix(matrix, teachsample)
+    #for i, matrix in enumerate(student_heatmap_batch):
+     #   student_heatmap_upsampled_batch[i] = upsample_matrix(matrix, teachsample)
    
     #print("student_heatmap upsampled batch shape "+str(student_heatmap_upsampled_batch.shape))
     #print("teacher heatmap_batch shape "+str(teacher_heatmap_batch.shape))
-    heatmap_MSE = MSEloss(student_heatmap_upsampled_batch, teacher_heatmap_batch)
+    heatmap_MSE = MSEloss(student_heatmap_batch, teacher_heatmap_batch)
     
     #print("heatmap MSE "+str(heatmap_MSE))
     #student_heatmap_batch = np.array([upsample_matrix(matrix) for matrix in student_heatmap_batch])
-    if (check_nan(student_heatmap_upsampled_batch)):
-        print("NaN detected on student heatmap batch AFTER upsampling")
+    #if (check_nan(student_heatmap_upsampled_batch)):
+     #   print("NaN detected on student heatmap batch AFTER upsampling")
     #print("stud heatmap  batch shape "+str(student_heatmap_batch.shape))
-    heatmap_dist_batch = torch.abs(student_heatmap_upsampled_batch - teacher_heatmap_batch)
-    if (check_nan(heatmap_dist_batch)):
-      print("NaN detected on heatmap distance before sum")
-    heatmap_dist =  torch.sum(heatmap_dist_batch,axis=(1,2))
-    if (check_nan(heatmap_dist)):
-      print("Nan detected on heatmap distance AFTER sum but before average")
-    avg_heatmap_dist = torch.mean(heatmap_dist)
+    #heatmap_dist_batch = torch.abs(student_heatmap_upsampled_batch - teacher_heatmap_batch)
+    #if (check_nan(heatmap_dist_batch)):
+    #  print("NaN detected on heatmap distance before sum")
+    #heatmap_dist =  torch.sum(heatmap_dist_batch,axis=(1,2))
+    #if (check_nan(heatmap_dist)):
+    #  print("Nan detected on heatmap distance AFTER sum but before average")
+    #avg_heatmap_dist = torch.mean(heatmap_dist)
     #print("average heamtap dist "+str(avg_heatmap_dist))
     return KD_loss, heatmap_MSE
+
 
 
 
@@ -1233,7 +1234,7 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
 
    
     student_cam = GradCAM(model=student_model, target_layer=student_final_layer)
-    
+    teacher_cam = GradCAM(model = teacher_model, tearget_layer = teacher_final_layer)
 
     student_weight_softmax_params =list(student_model.linear.parameters()) # This gives a list of weights for the fully connected layers
     student_weight_softmax = student_weight_softmax_params[0].data
@@ -1290,11 +1291,11 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
 
             print("student activated features")
             print(student_activated_features.features.grad_fn)
-            student_heatmap_batch = getCAMBatch(student_activated_features.features, student_weight_softmax, labels_batch)
-
-            teacher_heatmap_batch = getCAMBatch(teacher_activated_features.features, teacher_weight_softmax, labels_batch)
+            student_heatmap_batch = student_cam(student_output_batch,(32,32))
+            teacher_heatmap_batch = teacher_cam(teacher_output_batch)
            # print("one line before kl loss in train kd no thresh")
             kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
+
 
           if experiment == 'TopClass':
            # print("using top class of teacher")
@@ -1303,23 +1304,24 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
             max_probs, max_indices = torch.max(teacher_pred_probs, dim=1)
             print("student activated features")
             print(student_activated_features.features.grad_fn)
-            student_heatmap_batch = getCAMBatch(student_activated_features.features, student_weight_softmax, max_indices)
+            student_heatmap_batch = student_cam(student_output_batch,(32,32),max_indices)
             if (check_nan(student_heatmap_batch)):
               print("found a NaN on the student heatmap batch")
-            teacher_heatmap_batch = getCAMBatch(teacher_activated_features.features, teacher_weight_softmax, max_indices)
+            teacher_heatmap_batch = teacher_cam(teacher_output_batch,(32,32))
+           # teacher_heatmap_batch = getCAMBatch(teacher_activated_features.features, teacher_weight_softmax, max_indices)
             #print("one line before kl loss in train kd no thresh")
             kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
 
 
-          if experiment == 'AllClasses':
-            #print("using all classes")
-            print("student activated features")
-            print(student_activated_features.features.grad_fn)
-            student_heatmap_batch = classCAMSbatch(student_activated_features.features, student_weight_softmax)
-            teacher_heatmap_batch = classCAMSbatch(teacher_activated_features.features, teacher_weight_softmax)
-        #    print("one line before kl loss in train kd no thresh")
-            kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
-          #with torch.no_grad():
+        #   if experiment == 'AllClasses':
+        #     #print("using all classes")
+        #     print("student activated features")
+        #     print(student_activated_features.features.grad_fn)
+        #     student_heatmap_batch = classCAMSbatch(student_activated_features.features, student_weight_softmax)
+        #     teacher_heatmap_batch = classCAMSbatch(teacher_activated_features.features, teacher_weight_softmax)
+        # #    print("one line before kl loss in train kd no thresh")
+        #     kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
+        #   #with torch.no_grad():
           #    output_teacher_batch = teacher_model(train_batch)
           #if params.cuda:
            #   output_teacher_batch = output_teacher_batch.cuda()
@@ -1335,7 +1337,7 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
           # clear previous gradients, compute gradients of all variables wrt loss
           
           
-          combinedLossTensor = KLDgamma * kl_loss + heatmapbeta * (100 * heatmap_dissimilarity)
+          combinedLossTensor = KLDgamma * kl_loss + ( heatmapbeta * heatmap_dissimilarity)
           
           optimizer.zero_grad()
           scaler.scale(combinedLossTensor).backward()
@@ -3017,7 +3019,7 @@ sweep_configuration_nothresh = {
         #'KLDgamma': {'values': [0.3, 0.25, 0.2, 0.15]},#
         'KLDgamma': {'values': [0, 0.25, 0.5, 0.75]},#
         #'threshold': {'values': [0.3, 0.4, 0.5, 0.75]}
-        'experiment': {'values': ['TrueClass','TopClass','AllClasses']}
+        'experiment': {'values': ['TopClass']}
      
      }
 }
