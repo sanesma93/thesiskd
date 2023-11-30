@@ -67,6 +67,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 import torchvision.transforms.functional as VF
 
+from grad_cam import ActivationsAndGradients
+
+from grad_cam import GradCAM
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 use_cuda = torch.cuda.is_available()
@@ -963,7 +967,7 @@ def train_kd_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, data
     combinedLoss_avg = RunningAverage()
     heatmap_dissimilarity_avg = RunningAverage()
     kl_loss_avg = RunningAverage()
-   
+    
 
     student_model = model
 
@@ -1210,10 +1214,11 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
         params: (Params) hyperparameters
     """
     student_model = model
-    student_cam = GradCAM(model=student_model, target_layer=target_layer)
+   
+    scaler = torch.cuda.amp.GradScaler() 
     #print("inside train_kd_nothresh, experiment: "+str(experiment))
     # set model to training mode
-    model.train()
+    student_model.train()
     teacher_model.eval()
     #print("inside train kd no thresh")
     # summary for current training loop and a running average object for loss
@@ -1221,8 +1226,13 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
     combinedLoss_avg = RunningAverage()
     heatmap_dissimilarity_avg = RunningAverage()
     kl_loss_avg = RunningAverage()
-   
+    
+    
+    student_final_layer = student_model.layer4[-1]
+    teacher_final_layer = teacher_model.module.stage_3.stage_3_bottleneck_2 # Grab the final layer of the model
 
+   
+    student_cam = GradCAM(model=student_model, target_layer=student_final_layer)
     
 
     student_weight_softmax_params =list(student_model.linear.parameters()) # This gives a list of weights for the fully connected layers
@@ -1328,7 +1338,7 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
           combinedLossTensor = KLDgamma * kl_loss + heatmapbeta * (100 * heatmap_dissimilarity)
           
           optimizer.zero_grad()
-          combinedLossTensor.backward()
+          scaler.scale(combinedLossTensor).backward()
       #    print("type of kl loss" +str(type(kl_loss)))
        #   print("type of heatmap loss "+str(type(heatmap_dissimilarity)))  
         #  print("type of combinedLoss "+str(type(combinedLossTensor)))
@@ -1341,7 +1351,8 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
    
     
           
-          optimizer.step()
+          scaler.step(optimizer)
+          scaler.update()
           #gradients_after_step = [param.grad.clone() for param in student_model.parameters()]
           
       #    print("GRADIENTS AFTER STEP: are they all zero?")
@@ -1840,10 +1851,7 @@ def train_and_evaluate_kd_thresh(model, teacher_model, train_dataloader, val_dat
 
     teacher_activated_features.remove()
     student_activated_features.remove()
-
-
-     
-                     
+                    
 
 def train_and_evaluate_kd_nothresh(model, teacher_model, train_dataloader, val_dataloader, optimizer,    #  loss_fn_kd_nothresh, metrics, params, model_dir, restore_file, runconfig)
                        loss_fn_kd_nothresh, metrics, params, student_arch, teacher_arch, restore_file=None,experiment='TrueClass', KLDgamma=1, wandbrun= False):
@@ -2412,22 +2420,6 @@ def loss_fn(outputs, labels):
           demonstrates how you can easily define a custom loss function.
     """
     return nn.CrossEntropyLoss()(outputs, labels)
-
-
-#def loss_fn_kd(outputs, labels, teacher_outputs, params):
- #   """
-  #  Compute the knowledge-distillation (KD) loss given outputs, labels.
-   # "Hyperparameters": temperature and alpha
-    #NOTE: the KL Divergence for PyTorch comparing the softmaxs of teacher
-    #and student expects the input tensor to be log probabilities! See Issue #2
-    #"""
-    #alpha = params.alpha
-    #T = params.temperature
-    #KD_loss = nn.KLDivLoss()(F.log_softmax(outputs/T, dim=1),
-    #                         F.softmax(teacher_outputs/T, dim=1)) * (alpha * T * T) + \
-    #          F.cross_entropy(outputs, labels) * (1. - alpha)
-
-    #return KD_loss
 
 
 def accuracy(outputs, labels):
