@@ -23,6 +23,7 @@ from os.path import join as pjn
 from PIL import Image
 from typing import Union
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.backends.cudnn.benchmark = True
 
@@ -79,7 +80,7 @@ class GradCAM:
     def buffer_clear(self):
         self.activations_and_grads.buffer_clear()
 
-    def __call__(self, input_tensor, expand_size, label_indices=None):
+    def __call__(self, input_tensor, expand_size, label_indices=None, mode = "train"):
         self.buffer_clear()
         self.model.eval()
         
@@ -90,9 +91,19 @@ class GradCAM:
             img = input_tensor[batch_idx]
             img = img.unsqueeze(0) # (c, h, w) -> (b, c, h, w)
             output = self.activations_and_grads(img)[0] 
-
-            y_c = output[label_indices or torch.argmax(output)] # GAP over channel
-            y_c.backward(retain_graph=True)
+           
+          #  print("label indices shape" +str(label_indices.shape))
+            if label_indices != None:
+                y_c = output[label_indices[batch_idx]] # GAP over channel
+                #print("output shape "+str(output.shape))
+                #print("torch argmax "+str(torch.argmax(output)))
+                #print("got y_c: "+str(y_c))
+                #print("y_c type "+str(y_c.type))
+               
+            else :
+                y_c = output[torch.argmax(output)] # GAP over channel
+            if mode == "train":    
+                y_c.backward(retain_graph=True) # IF WE'RE EVALUATING WE DON'T WANNA GO BACKWARDS
 
             activations = self.activations_and_grads.activations
             grads = self.activations_and_grads.gradients
@@ -117,6 +128,6 @@ class GradCAM:
         concated_cam = torch.cat(cam_stack, dim=0).squeeze()
         del cam_stack, input_tensor
         torch.cuda.empty_cache()
-        self.model.train()
+        self.model.train() #when evaluating WE DON'T WANT TO SET IT TO TRAINING MODE
         self.buffer_clear()
         return concated_cam

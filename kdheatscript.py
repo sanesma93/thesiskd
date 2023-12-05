@@ -71,6 +71,7 @@ from grad_cam import ActivationsAndGradients
 
 from grad_cam import GradCAM
 
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 use_cuda = torch.cuda.is_available()
@@ -1204,7 +1205,7 @@ def train_kd_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, data
 
 
 def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dataloader, metrics,
-                      params, experiment, student_activated_features, teacher_activated_features, KLDgamma, wandbrun):
+                      params, experiment, KLDgamma, wandbrun):
     """Train the model on `num_steps` batches
     Args:
         model: (torch.nn.Module) the neural network
@@ -1234,14 +1235,7 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
 
    
     student_cam = GradCAM(model=student_model, target_layer=student_final_layer)
-    teacher_cam = GradCAM(model = teacher_model, tearget_layer = teacher_final_layer)
-
-    student_weight_softmax_params =list(student_model.linear.parameters()) # This gives a list of weights for the fully connected layers
-    student_weight_softmax = student_weight_softmax_params[0].data
-    student_weight_softmax.requires_grad = True
-    teacher_weight_softmax_params = list(teacher_model.module.classifier.parameters()) # This gives a list of weights for the fully connected layers
-    teacher_weight_softmax = teacher_weight_softmax_params[0].data
-    teacher_weight_softmax.requires_grad = True
+    teacher_cam = GradCAM(model = teacher_model, target_layer = teacher_final_layer)
     # Use tqdm for progress bar
     with tqdm(total=len(dataloader)) as t:
       for i, (train_batch, labels_batch) in enumerate(dataloader):
@@ -1284,15 +1278,9 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
                 loss = loss_fn_kd_noHeatMap(outputs=student_output_batch, labels=labels_batch, teacher_outputs=teacher_output_batch, params=params)
 
           if experiment == 'TrueClass':
-            #print("using true classes")
-            if (print_if_all_zero(student_activated_features.features)):
-              print("student_activated_features.features is all 0s")
-             # print("student_activated_features.features: "+str(student_activated_features.features))
-
-            print("student activated features")
-            print(student_activated_features.features.grad_fn)
-            student_heatmap_batch = student_cam(student_output_batch,(32,32))
-            teacher_heatmap_batch = teacher_cam(teacher_output_batch)
+           
+            student_heatmap_batch = student_cam(train_batch,(32,32))
+            teacher_heatmap_batch = teacher_cam(train_batch,(32,32))
            # print("one line before kl loss in train kd no thresh")
             kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
 
@@ -1302,12 +1290,14 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
             teacher_preds = torch.sigmoid(teacher_output_batch)
             teacher_pred_probs = F.softmax(teacher_preds, dim=1).data.squeeze()
             max_probs, max_indices = torch.max(teacher_pred_probs, dim=1)
-            print("student activated features")
-            print(student_activated_features.features.grad_fn)
-            student_heatmap_batch = student_cam(student_output_batch,(32,32),max_indices)
+            
+           
+            teacher_heatmap_batch = teacher_cam(train_batch,(8,8))
+    
+           # print("max indices "+str(max_indices))
+            student_heatmap_batch = student_cam(train_batch,(8,8),max_indices)
             if (check_nan(student_heatmap_batch)):
               print("found a NaN on the student heatmap batch")
-            teacher_heatmap_batch = teacher_cam(teacher_output_batch,(32,32))
            # teacher_heatmap_batch = getCAMBatch(teacher_activated_features.features, teacher_weight_softmax, max_indices)
             #print("one line before kl loss in train kd no thresh")
             kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
@@ -1432,16 +1422,12 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
         wandb.log({"train_avg_KL_Loss": float(kl_loss_avg())})
         wandb.log({"train_avgHeatmap_dissimilarity": float(heatmap_dissimilarity_avg())})
         wandb.log({"train_avg_combinedLoss": combinedLoss_avg()})
-        wandb.log({"first layer weight grad": student_model[0].weights.grad})
-        wandb.log({"first layer bias grad": student_model[0].bias.grad}) 
-        wandb.log({"last layer weight grad": student_model[-1].weights.grad})
-        wandb.log({"last layer bias grad": student_model[-1].bias.grad})
-    metrics_mean = {
-    metric: np.mean(
-        [x[metric].cpu().detach().numpy() if isinstance(x[metric], torch.Tensor) else x[metric] for x in summ]
-    )
-    for metric in summ[0]
-    }
+        metrics_mean = {
+             metric: np.mean(
+                [x[metric].cpu().detach().numpy() if isinstance(x[metric], torch.Tensor) else x[metric] for x in summ]
+             )
+                for metric in summ[0]
+         }
     
     
     metrics_string = " ; ".join("{}: {:05.3f}".format(k, v) for k, v in metrics_mean.items())
@@ -1870,7 +1856,7 @@ def train_and_evaluate_kd_nothresh(model, teacher_model, train_dataloader, val_d
    
     student_model = model
     images, labels = next(iter(train_dataloader))
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+   # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     images, labels = images.to(device), labels.to(device)
 #grid = torchvision.utils.make_grid(images)
 
@@ -1982,6 +1968,278 @@ def train_and_evaluate_kd_nothresh(model, teacher_model, train_dataloader, val_d
             print("new best validation accuracy: "+str(best_val_acc))
             save_checkpoint({'epoch': epoch + 1,
                             'state_dict': model.state_dict(),
+                            'optim_dict' : optimizer.state_dict()},
+                            is_best=is_best,
+                            checkpoint=destination_folder)
+            print("saved new best weights to "+ destination_folder)
+            if wandbrun == True:
+                
+                wandb.log({"best_val_acc": best_val_acc, "epoch": epoch+1})
+            # Save best val metrics in a json file in the model directory
+            best_json_path = os.path.join(model_dir, "metrics_val_best_weights.json")
+            save_dict_to_json(val_metrics, best_json_path)
+
+        # Save latest val metrics in a json file in the model directory
+        last_json_path = os.path.join(model_dir, "metrics_val_last_weights.json")
+        save_dict_to_json(val_metrics, last_json_path)
+
+
+        #UNLESS YOU HAVE AT LEAST 300GB VRAM OR MORE NEVER ACTIVATE THIS
+        # #============ TensorBoard logging: uncomment below to turn in on ============#
+        # # (1) Log the scalar values
+    # info = {
+                #            'val accuracy': val_acc,
+            # 'KL avg loss': loss,
+            #'Heatmap loss': heatmap_dissimilarity
+        #     'val accuracy': val_acc,
+        #    'val KL  loss': val_kl_loss,
+        #   'val Heatmap loss': val_heatmap_dissimilarity,
+        #  'val combined Loss': val_combinedLoss
+
+        #}
+
+        # }
+
+        #for tag, value in info.items():
+        #    board_logger.scalar_summary(tag, value, epoch+1)
+
+        # # (2) Log values and gradients of the parameters (histogram)
+        #for tag, value in model.named_parameters():
+        # tag = tag.replace('.', '/')
+        #  board_logger.histo_summary(tag, value.data.cpu().numpy(), epoch+1)
+        # board_logger.histo_summary(tag+'/grad', value.grad.data.cpu().numpy(), epoch+1)
+
+
+
+    teacher_activated_features.remove()
+    student_activated_features.remove()
+
+
+def papereval(student_model, teacher_model, dataloader, metrics, params, experiment, KLDgamma):
+    """Evaluate the model on `num_steps` batches.
+    Args:
+        model: (torch.nn.Module) the neural network
+        loss_fn: a function that takes batch_output and batch_labels and computes the loss for the batch
+        dataloader: (DataLoader) a torch.utils.data.DataLoader object that fetches data
+        metrics: (dict) a dictionary of functions that compute a metric using the output and labels of each batch
+        params: (Params) hyperparameters
+        num_steps: (int) number of batches to train on, each of size params.batch_size
+    """
+
+    # set model to evaluation mode
+    student_model.eval()
+
+    # summary for current eval loop
+    summ = []
+    
+    m = torch.nn.Sigmoid()
+
+    
+    student_final_layer = student_model.layer4[-1]
+    teacher_final_layer = teacher_model.module.stage_3.stage_3_bottleneck_2 # Grab the final layer of the model
+
+   
+    student_cam = GradCAM(model=student_model, target_layer=student_final_layer)
+    teacher_cam = GradCAM(model = teacher_model, target_layer = teacher_final_layer)
+    # compute metrics over the dataset
+    with torch.no_grad():
+      for i, (data_batch, labels_batch) in enumerate(dataloader):
+
+          # move to GPU if available
+          #print("shape of label batch"+str(labels_batch.shape))
+        # print("shape of data_batch"+str(data_batch.shape))
+          if params.cuda:
+              data_batch, labels_batch = data_batch.cuda(), labels_batch.cuda()
+          # fetch the next evaluation batch
+          data_batch, labels_batch = Variable(data_batch), Variable(labels_batch)
+          # compute model output
+
+          student_output_batch = student_model(data_batch)
+          teacher_output_batch = teacher_model(data_batch)
+         # loss = loss_fn_kd(outputs= output_batch, labels = labels_batch, teacher_outputs =output_teacher_batch, params=params)
+          #loss = 0.0  #force validation loss to zero to reduce computation time
+          if experiment == 'TrueClass':
+           print("Jeff")
+
+
+          if experiment == 'TopClass':
+            teacher_preds = torch.sigmoid(teacher_output_batch)
+            teacher_pred_probs = F.softmax(teacher_preds, dim=1).data.squeeze()
+            max_probs, max_indices = torch.max(teacher_pred_probs, dim=1)
+            
+            
+            teacher_heatmap_batch = teacher_cam(data_batch,(8,8), mode = "eval")
+    
+           # print("max indices "+str(max_indices))
+            student_heatmap_batch = student_cam(data_batch,(8,8),max_indices, "eval")
+    
+           # print("made teacher and student heatmap batches")
+
+          if experiment == 'AllClasses':
+           print("all jeff")
+
+
+          with torch.no_grad():
+            #print("attempting loss")  
+            kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
+            #print("loss made")
+            heatmapbeta = 1-KLDgamma
+            combinedLossTensor = KLDgamma * kl_loss + heatmapbeta * heatmap_dissimilarity
+          
+
+         # running_loss += loss.item() # sum up batch loss
+          #running_ap += get_ap_score(torch.Tensor.cpu(labels_batch).detach().numpy(), torch.Tensor.cpu(m(output_batch)).detach().numpy())
+
+          output_batch = student_output_batch
+          # extract data from torch Variable, move to cpu, convert to numpy arrays
+          output_batch = output_batch.data.cpu().numpy()
+          labels_batch = labels_batch.data.cpu().numpy()
+
+          # compute all metrics on this batch
+          summary_batch = {metric: metrics[metric](output_batch, labels_batch)
+                          for metric in metrics}
+          # summary_batch['loss'] = loss.data[0]
+          summary_batch['combinedLoss'] = combinedLossTensor.data
+          if experiment !='NoHeatmap':
+            summary_batch['heatmap_dissimilarity'] = heatmap_dissimilarity
+            summary_batch['kl_loss'] = kl_loss.data
+          summ.append(summary_batch)
+        #  wandb.log({"val_batch_kl_loss": kl_loss.data, "val_batch_heatmap_dissimilarity": heatmap_dissimilarity,
+         #           "val_batch_combinedLoss":combinedLossTensor.data})  
+
+
+
+          #del data_batch, labels_batch, output_batch
+          #gc.collect()
+          #torch.cuda.empty_cache()
+
+
+    # compute mean of all metrics in summary
+    #metrics_mean = {metric:torch.mean(torch.as_tensor([x[metric] for x in summ])) for metric in summ[0]} #changef from np.mean to torch.mean
+    metrics_mean = {
+    metric: np.mean(
+        [x[metric].cpu().detach().numpy() if isinstance(x[metric], torch.Tensor) else x[metric] for x in summ]
+    )
+    for metric in summ[0]
+    }
+    
+    
+    metrics_string = " ; ".join("{}: {:05.3f}".format(k, v) for k, v in metrics_mean.items())
+    logging.info("- Eval metrics : " + metrics_string)
+
+    return metrics_mean
+
+
+def paper_traineval(student_model, teacher_model, train_dataloader, val_dataloader, optimizer,    #  loss_fn_kd_nothresh, metrics, params, model_dir, restore_file, runconfig)
+                       loss_fn_kd_nothresh, metrics, params, student_arch, teacher_arch, restore_file=None,experiment='TrueClass', KLDgamma=1, wandbrun= False):
+    """Train the model and evaluate every epoch.
+    Args:
+        model: (torch.nn.Module) the neural network
+        params: (Params) hyperparameters
+        model_dir: (string) directory containing config, weights and log
+        restore_file: (string) - file to restore (without its extension .pth.tar)
+    """
+    #with wandb.init(config=runconfig):
+     #   config = wandb.config
+    # reload weights from restore_file if specified
+   
+    #images, labels = next(iter(train_dataloader))
+    #device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    #images, labels = images.to(device), labels.to(device)
+#grid = torchvision.utils.make_grid(images)
+
+
+    best_val_acc = 0.0
+    
+   # student_final_layer = student_model.layer4[-1]
+    #teacher_final_layer = teacher_model.module.stage_3.stage_3_bottleneck_2 # Grab the final layer of the model
+
+    
+    #print("student final layer: "+str(student_final_layer))
+    # Tensorboard logger setup
+    board_logger = Board_Logger(os.path.join(model_dir, 'board_logs'))
+
+    # learning rate schedulers for different models:
+    if params.model_version == "resnet18_distill":
+        scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+    # for cnn models, num_epoch is always < 100, so it's intentionally not using scheduler here
+    elif params.model_version == "cnn_distill":
+        scheduler = StepLR(optimizer, step_size=30, gamma=0.2)
+    if KLDgamma == 1: 
+        print("KLD gamma = 1:  heatmap dissimilarity will be tracked but will have no impact on the loss calculation")
+        
+    if KLDgamma == 0:
+         print("KLD gamma = 0: KL_loss will be tracked but will have no impact on the loss calculation, only heatmap dissimilarity will matter")
+           
+    for epoch in range(params.num_epochs):
+    #  print("memory summary before starting new epoch:")
+    # print(torch.cuda.memory_summary())    
+        print("-------Epoch {}----------".format(epoch+1))
+        scheduler.step()
+
+        # Run one epoch
+        logging.info("Epoch {}/{}".format(epoch + 1, params.num_epochs))
+
+        # compute number of batches in one epoch (one full pass over the training set)
+        if experiment != 'NoHeatmap':
+            paperloop_nothresh(student_model, teacher_model, optimizer, loss_fn_kd_nothresh, train_dataloader,
+                metrics, params, experiment, KLDgamma, wandbrun)
+            #  wandb.log({"epoch":epoch})
+
+        else:
+            train_kd_vanilla(student_model,teacher_model,optimizer,loss_fn_kd_noHeatMap,train_dataloader,metrics,params)
+        # Evaluate for one epoch on validation set
+        #print("memory summary after a round of training but before evaluating")
+        #print(torch.cuda.memory_summary())
+        student_activated_features = 1
+        teacher_activated_features = 1
+        val_metrics = papereval(student_model, teacher_model, val_dataloader, metrics, params, experiment, 
+                                  KLDgamma)
+        #print("memory summary after evaluating")
+        #print(torch.cuda.memory_summary())
+        
+        val_acc = val_metrics['accuracy']
+        print("validation accuracy: "+str(val_acc))
+        val_combinedLoss = val_metrics['combinedLoss']
+        print("validation combinedLoss: "+str(val_combinedLoss))
+        val_kl_loss = val_metrics['kl_loss']
+        print("validation kl_loss: "+str(val_kl_loss))
+        val_heatmap_dissimilarity = val_metrics['heatmap_dissimilarity']
+        print("validation heatmap_dissimilarity: "+str(val_heatmap_dissimilarity))
+        if wandbrun == True:
+
+           wandb.log({"val_acc": val_acc, "epoch": epoch+1})       
+           wandb.log({"val_combined_loss": val_combinedLoss, "epoch": epoch+1})       
+           wandb.log({"val_kl_loss": val_kl_loss, "epoch": epoch+1})       
+           wandb.log({"val_heatmap_dissimilarity": val_heatmap_dissimilarity, "epoch": epoch+1})      
+        # Save weights
+        
+        is_best = val_acc>=best_val_acc
+        
+        
+        
+        settings_dict ={
+            "useKD": True,
+            "student_model": student_arch,
+            "teacher_model": teacher_arch,
+            "usethreshold": False,
+            "experiment": experiment,
+            "KLDgamma": KLDgamma           
+        }
+        
+        gammastring = int(KLDgamma * 100)
+        path_base = "/home/smartinez/modelruns"
+       # destination_folder = f'{path_base}/student_{student_arch}/teacher_{teacher_arch}/experiment_{experiment}/KLDgamma_{gammastring}/' 
+        destination_folder = f'{path_base}/kd_nothresh_student_{student_arch}_teacher_{teacher_arch}_experiment_{experiment}_KLDgamma_{gammastring}' 
+    
+        # If best_eval, best_save_path
+        if is_best:
+            logging.info("- Found new best accuracy     ")
+            print("previous best validation accuracy: "+str(best_val_acc))
+            best_val_acc = val_acc
+            print("new best validation accuracy: "+str(best_val_acc))
+            save_checkpoint({'epoch': epoch + 1,
+                            'state_dict': student_model.state_dict(),
                             'optim_dict' : optimizer.state_dict()},
                             is_best=is_best,
                             checkpoint=destination_folder)
@@ -2315,10 +2573,10 @@ def fetch_subset_dataloader(types, params):
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))])
 
-    trainset = torchvision.datasets.CIFAR10(root='./data-cifar10', train=True,
+    trainset = torchvision.datasets.CIFAR10(root='/home/shared/data/cifar10', train=True,
         download=True, transform=train_transformer)
 
-    devset = torchvision.datasets.CIFAR10(root='./data-cifar10', train=False,
+    devset = torchvision.datasets.CIFAR10(root='/home/shared/data/cifar10', train=False,
         download=True, transform=dev_transformer)
 
     trainset_size = len(trainset)
@@ -2639,7 +2897,7 @@ params.batch_size = 100
 
 #!mkdir resnet18_minimaltest
 
-#model_dir = '/bin/smartinez/resnet18minimaltest'
+model_dir = '/home/smartinez/modelruns'
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -2652,7 +2910,7 @@ if params.cuda: torch.cuda.manual_seed(230)
 
 tb = SummaryWriter()
 #mages, labels = next(iter(train_dl))
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #images, labels = images.to(device), labels.to(device)
 #grid = torchvision.utils.make_grid(images)
@@ -2703,13 +2961,13 @@ params.cuda
 
 kd_data = {
     "model_version": "resnet18_distill",
-    "subset_percent": 1.0,
+    "subset_percent": 0.01,
     "augmentation": "yes",
     "teacher": "resnext",
     "alpha": 0.95,
     "temperature": 6,
     "learning_rate": 1e-1,
-    "batch_size": 128,
+    "batch_size": 512,
     "num_epochs": 175,
     "dropout_rate": 0.0,
     "num_channels": 32,
@@ -2945,16 +3203,18 @@ def nothreshsweeprun(config=None):
         params = DotDict(kd_data)
         #print("line before params.cuda")
         params.cuda = torch.cuda.is_available()
-        params.num_epochs = 40
+        params.num_epochs = 30
+        params.batch_size = 256
 
 # Set the random seed for reproducible experiments
         random.seed(230)
         torch.manual_seed(230)
         if params.cuda: torch.cuda.manual_seed(230)
-        student_model = ResNet18().cuda() if params.cuda else ResNet18()
+        student_model = ResNet18()
+        student_model.to(device)
         print("student model initialised from scratch")
-        train_dl = fetch_dataloader('train', params)
-        val_dl = fetch_dataloader('dev', params)
+        train_dl = fetch_subset_dataloader('train', params)
+        val_dl = fetch_subset_dataloader('dev', params)
         #train_dl = fetch_dataloader('train', params)
        # val_dl = fetch_dataloader('dev', params)
         #print("initialising teacher model")
@@ -2978,7 +3238,7 @@ def nothreshsweeprun(config=None):
 }       
        # print("line before calling train and evaluate")
         #print("beginning train and evaluate loop")
-        train_and_evaluate_kd_nothresh(student_model, teacher_model, train_dl, val_dl, optimizer,
+        paper_traineval(student_model, teacher_model, train_dl, val_dl, optimizer,
                        loss_fn_kd_nothresh, metrics, params, "resnet18", "resnext29",  restore_file,experiment = config.experiment, KLDgamma= config.KLDgamma, wandbrun= True)
 #        train_and_evaluate_kd_nothresh(student_model, teacher_model, train_dl, val_dl, optimizer,
  #                      loss_fn_kd_nothresh, metrics, params, restore_file, experiment =config.experiment, KLDgamma = config.KLDgamma, wandbrun = True )
@@ -2986,7 +3246,7 @@ def nothreshsweeprun(config=None):
 
 res18kdparams ={
     "model_version": "resnet18_distill",
-    "subset_percent": 1.0,
+    "subset_percent": 0.01,
     "augmentation": "yes",
     "teacher": "resnext29",
     "alpha": 0.95,
@@ -3000,6 +3260,7 @@ res18kdparams ={
     "num_workers": 4
 }
 params.num_epochs = 40
+params.subset_percent = 0.01
 params = DotDict(res18kdparams)
 
 sweep_configuration_nothresh = {
