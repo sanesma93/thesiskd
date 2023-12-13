@@ -27,6 +27,20 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.backends.cudnn.benchmark = True
 
+
+class Timer:
+    def __enter__(self):
+        self._start = time.time()
+        return self
+
+    def __call__(self, name: str):
+        self._name = name
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        delta_time = time.time() - self._start
+        print(f"Code took {delta_time:.3f} seconds to run")
+
 class ActivationsAndGradients:
     """ Class for extracting activations and gradients 
     from targetted intermediate layers.
@@ -83,33 +97,21 @@ class GradCAM:
     def __call__(self, input_tensor, expand_size, label_indices=None, mode = "train"):
         self.buffer_clear()
         self.model.eval()
-        
         cam_stack=[]    
-        
         for batch_idx in range(input_tensor.shape[0]): # iteration w.r.t. batch
             self.model.zero_grad()
             img = input_tensor[batch_idx]
             img = img.unsqueeze(0) # (c, h, w) -> (b, c, h, w)
             output = self.activations_and_grads(img)[0] 
-           
-          #  print("label indices shape" +str(label_indices.shape))
             if label_indices != None:
                 y_c = output[label_indices[batch_idx]] # GAP over channel
-                #print("output shape "+str(output.shape))
-                #print("torch argmax "+str(torch.argmax(output)))
-                #print("got y_c: "+str(y_c))
-                #print("y_c type "+str(y_c.type))
-               
             else :
-                y_c = output[torch.argmax(output)] # GAP over channel
-            if mode == "train":    
-                y_c.backward(retain_graph=True) # IF WE'RE EVALUATING WE DON'T WANNA GO BACKWARDS
-
+                y_c = output[torch.argmax(output)]   
+            y_c.backward(retain_graph=True)
             activations = self.activations_and_grads.activations
             grads = self.activations_and_grads.gradients
             weights = torch.mean(grads, dim=(1, 2), keepdim=True)
             cam = torch.sum(weights * activations, dim=0)
-
             cam = cam.unsqueeze(0).unsqueeze(0) # (h, w) -> (b, c, h, w)
             cam = F.interpolate(cam, size=expand_size, mode='bilinear', align_corners=True)
 
@@ -128,6 +130,6 @@ class GradCAM:
         concated_cam = torch.cat(cam_stack, dim=0).squeeze()
         del cam_stack, input_tensor
         torch.cuda.empty_cache()
-        self.model.train() #when evaluating WE DON'T WANT TO SET IT TO TRAINING MODE
+        self.model.train()
         self.buffer_clear()
         return concated_cam
