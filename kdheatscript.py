@@ -73,10 +73,11 @@ from grad_cam import ActivationsAndGradients
 
 from grad_cam import GradCAM
 
+from torchcam.methods import CAM
 
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda" if use_cuda else "cpu")
@@ -194,9 +195,11 @@ def loss_fn_kd_thresh(outputs, labels, teacher_outputs, params, student_heatmap_
     """
     if not isinstance(student_heatmap_batch, torch.Tensor):
         print("DANGER: student heatmap batch is NOT of type Tensor ")
+        print(student_heatmap_batch.dtype)
         
     if not isinstance(teacher_heatmap_batch, torch.Tensor):
         print("DANGER: teacher heatmap batch is NOT of type Tensor ")    
+        print(teacher_heatmap_batch.dtype)
     alpha = params.alpha
     T = params.temperature
     KD_loss = nn.KLDivLoss(reduction = "batchmean")(F.log_softmax(outputs/T, dim=1),
@@ -267,19 +270,23 @@ def loss_fn_kd_nothresh(outputs, labels, teacher_outputs, params, student_heatma
     """
     if not isinstance(student_heatmap_batch, torch.Tensor):
         print("DANGER: student heatmap batch is NOT of type Tensor ")
-        
+        print(student_heatmap_batch.dtype)
     if not isinstance(teacher_heatmap_batch, torch.Tensor):
         print("DANGER: teacher heatmap batch is NOT of type Tensor ")  
+        print(teacher_heatmap_batch.dtype)
     alpha = params.alpha
     T = params.temperature
+    #print("outputs shape "+str(outputs.shape))
+    #print("teacher_outputs shape "+str(teacher_outputs.shape))
+    #print("labels shape "+str(labels.shape))
     KD_loss = nn.KLDivLoss(reduction = "batchmean")(F.log_softmax(outputs/T, dim=1),
                              F.softmax(teacher_outputs/T, dim=1)) * (alpha * T * T) + \
               F.cross_entropy(outputs, labels) * (1. - alpha)
 
     
     
-    if (check_nan(student_heatmap_batch)):
-     print("NaN detected on student heatmap batch (this is a no threshold experiment)")
+    #if (check_nan(student_heatmap_batch)):
+     #print("NaN detected on student heatmap batch (this is a no threshold experiment)")
 
 #print("stud heatmap  batch shape "+str(student_heatmap_batch.shape))
 
@@ -300,7 +307,7 @@ def loss_fn_kd_nothresh(outputs, labels, teacher_outputs, params, student_heatma
     #print("student_heatmap upsampled batch shape "+str(student_heatmap_upsampled_batch.shape))
     #print("teacher heatmap_batch shape "+str(teacher_heatmap_batch.shape))
     heatmap_MSE = MSEloss(student_heatmap_batch, teacher_heatmap_batch)
-    
+    #print("heatmap MSE "+str(heatmap_MSE))
     #print("heatmap MSE "+str(heatmap_MSE))
     #student_heatmap_batch = np.array([upsample_matrix(matrix) for matrix in student_heatmap_batch])
     #if (check_nan(student_heatmap_upsampled_batch)):
@@ -455,10 +462,10 @@ def train_and_evaluate(model, train_dataloader, val_dataloader, optimizer,
 
     # learning rate schedulers for different models:
     if params.model_version == "resnet18":
-        scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+        scheduler = StepLR(optimizer, step_size=25, gamma=0.1)
     # for cnn models, num_epoch is always < 100, so it's intentionally not using scheduler here
     elif params.model_version == "cnn":
-        scheduler = StepLR(optimizer, step_size=30, gamma=0.2)
+        scheduler = StepLR(optimizer, step_size=25, gamma=0.2)
     
     for epoch in range(params.num_epochs):
         print("-------Epoch {}----------".format(epoch+1))
@@ -860,7 +867,7 @@ def train_kd_thresh(model, teacher_model, optimizer, loss_fn_kd_thresh, dataload
           #print("heatmap_dissimilarity type "+str(heatmap_dissimilarity.dtype))
           #print("heatmap_dissimilarity: "+str(heatmap_dissimilarity))
           
-          combinedLossTensor = KLDgamma * kl_loss + heatmapbeta * heatmap_dissimilarity
+          combinedLossTensor = KLDgamma * kl_loss +( 100*( heatmapbeta * heatmap_dissimilarity))
           if KLDgamma == 1:
               combinedLossTensor = kl_loss
               if combinedLossTensor != kl_loss:
@@ -1207,7 +1214,7 @@ def train_kd_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, data
 
 
 def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dataloader, metrics,
-                      params, experiment, KLDgamma, wandbrun):
+                      params, experiment, KLDgamma, wandbrun, algo):
     """Train the model on `num_steps` batches
     Args:
         model: (torch.nn.Module) the neural network
@@ -1235,9 +1242,14 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
     student_final_layer = student_model.layer4[-1]
     teacher_final_layer = teacher_model.module.stage_3.stage_3_bottleneck_2 # Grab the final layer of the model
 
-   
-    student_cam = GradCAM(model=student_model, target_layer=student_final_layer)
-    teacher_cam = GradCAM(model = teacher_model, target_layer = teacher_final_layer)
+    if algo == "GradCAM":
+     student_cam = GradCAM(model=student_model, target_layer=student_final_layer)
+     teacher_cam = GradCAM(model = teacher_model, target_layer = teacher_final_layer)
+    elif algo == "CAM":
+        student_cam = CAM(student_model,student_final_layer,input_shape=[3,32,32])
+        teacher_cam = CAM(teacher_model, teacher_final_layer,input_shape = [3,32,32])         
+    else:
+        "somethign went wrong with the algorithm choice"    
     # Use tqdm for progress bar
     with tqdm(total=len(dataloader)) as t:
       for i, (train_batch, labels_batch) in enumerate(dataloader):
@@ -1257,8 +1269,9 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
           if experiment != 'NoHeatmap':
 
             train_batch, labels_batch = Variable(train_batch, requires_grad= True), Variable(labels_batch)
+            
             teacher_output_batch = teacher_model(train_batch)
-             
+            #print("train_batch shape "+str(train_batch.shape)) 
             
             if params.cuda:
               teacher_output_batch = teacher_output_batch.cuda()
@@ -1281,8 +1294,10 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
 
           if experiment == 'TrueClass':
            
-            student_heatmap_batch = student_cam(train_batch,(8,8))
-            teacher_heatmap_batch = teacher_cam(train_batch,(8,8))
+            student_heatmap_batch = student_cam(train_batch,(4,4))
+            print("student heatmap "+str(student_heatmap_batch))
+            teacher_heatmap_batch = teacher_cam(train_batch,(4,4))
+            print("teacher_heatmap "+str(teacher_heatmap_batch))
            # print("one line before kl loss in train kd no thresh")
             kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
 
@@ -1295,18 +1310,47 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
             
            ## targets = [ClassifierOutputTarget(
            #     category) for category in max_indices]
-            teacher_heatmap_batch = teacher_cam(train_batch,(8,8))
-
-           # print("max indices "+str(max_indices))
-            student_heatmap_batch = student_cam(train_batch,(8,8),max_indices)
+            if algo == 'GradCAM':
+                
+                teacher_heatmap_batch = teacher_cam(train_batch,(4,4))
+                #  print("teacher_heatmap "+str(teacher_heatmap_batch))
+                # print("max indices "+str(max_indices))
+                student_heatmap_batch = student_cam(train_batch,(4,4),max_indices)
+                if (check_nan(student_heatmap_batch)):
+                    print("found a NaN on the student heatmap batch")
+                if (check_nan(teacher_heatmap_batch)):  
+                    print("found a NaN on the student heatmap batch")
+            elif algo == 'CAM':
+                #print("max indices shape "+str(max_indices.shape))
+                max_indices_list = max_indices.tolist()
+                #print(max_indices.shape)
+             #   element_type = type(max_indices[0])
+             #   print(element_type)
+                teacher_heatmap_batch = teacher_cam(scores =teacher_output_batch,class_idx= max_indices_list)
+                #print("teacher heatmap batch shape "+str(teacher_heatmap_batch.shape))
+                student_heatmap_batch = student_cam(scores = student_output_batch, class_idx =max_indices_list)
+                teacher_heatmap_stack = torch.stack(teacher_heatmap_batch, dim=0)    
+                student_heatmap_stack = torch.stack(student_heatmap_batch,dim = 0)
+                teacher_heatmap_stack = F.interpolate(teacher_heatmap_stack, size=(4,4), mode='bilinear', align_corners=True)
+                teacher_heatmap_stack = teacher_heatmap_stack.squeeze()
+                student_heatmap_stack = student_heatmap_stack.squeeze()
+                #print("teacher stack shape "+str(teacher_heatmap_stack.shape))
+                #print("teacher heatmap batch shape "+str(teacher_heatmap_batch.shape))
+                #print("student heatmap batch shape "+str(student_heatmap_batch.shape))
+                    
+        #    print("student heatmap "+str(student_heatmap_batch))
            # student_heatmap_batch = student_cam(train_batch, targets)
+            
            # print("student heatmap batch shape "+str(student_heatmap_batch.shape))
-            if (check_nan(student_heatmap_batch)):
-              print("found a NaN on the student heatmap batch")
+                if (check_nan(student_heatmap_stack)):
+                    print("found a NaN on the student heatmap batch")
+                if (check_nan(teacher_heatmap_stack)):  
+                    print("found a NaN on the student heatmap batch")
+            
             #print("teacher heatmap batch type "+str(teacher_heatmap_batch.dtype))  
            # teacher_heatmap_batch = getCAMBatch(teacher_activated_features.features, teacher_weight_softmax, max_indices)
             #print("one line before kl loss in train kd no thresh")
-            kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
+            kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_stack, teacher_heatmap_stack)
 
 
         #   if experiment == 'AllClasses':
@@ -1333,7 +1377,7 @@ def paperloop_nothresh(model, teacher_model, optimizer, loss_fn_kd_nothresh, dat
           # clear previous gradients, compute gradients of all variables wrt loss
           
           
-          combinedLossTensor = KLDgamma * kl_loss + ( heatmapbeta * heatmap_dissimilarity)
+          combinedLossTensor = KLDgamma *kl_loss +( 100* ( heatmapbeta * heatmap_dissimilarity) )
           
           optimizer.zero_grad()
           scaler.scale(combinedLossTensor).backward()
@@ -1719,10 +1763,10 @@ def train_and_evaluate_kd_thresh(model, teacher_model, train_dataloader, val_dat
 
     # learning rate schedulers for different models:
     if params.model_version == "resnet18_distill":
-        scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+        scheduler = StepLR(optimizer, step_size=25, gamma=0.1)
     # for cnn models, num_epoch is always < 100, so it's intentionally not using scheduler here
     elif params.model_version == "cnn_distill":
-        scheduler = StepLR(optimizer, step_size=30, gamma=0.2)
+        scheduler = StepLR(optimizer, step_size=25, gamma=0.2)
     if KLDgamma == 1:
         print("KLD gamma = 1:  heatmap dissimilarity will be tracked but will have no impact on the loss calculation")
         
@@ -1896,10 +1940,10 @@ def train_and_evaluate_kd_nothresh(model, teacher_model, train_dataloader, val_d
 
     # learning rate schedulers for different models:
     if params.model_version == "resnet18_distill":
-        scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+        scheduler = StepLR(optimizer, step_size=25, gamma=0.1)
     # for cnn models, num_epoch is always < 100, so it's intentionally not using scheduler here
     elif params.model_version == "cnn_distill":
-        scheduler = StepLR(optimizer, step_size=30, gamma=0.2)
+        scheduler = StepLR(optimizer, step_size=25, gamma=0.2)
     if KLDgamma == 1: 
         print("KLD gamma = 1:  heatmap dissimilarity will be tracked but will have no impact on the loss calculation")
         
@@ -2021,7 +2065,7 @@ def train_and_evaluate_kd_nothresh(model, teacher_model, train_dataloader, val_d
     student_activated_features.remove()
 
 
-def papereval(student_model, teacher_model, dataloader, metrics, params, experiment, KLDgamma):
+def papereval(student_model, teacher_model, dataloader, metrics, params, experiment, KLDgamma, algo):
     """Evaluate the model on `num_steps` batches.
     Args:
         model: (torch.nn.Module) the neural network
@@ -2047,9 +2091,14 @@ def papereval(student_model, teacher_model, dataloader, metrics, params, experim
     student_final_layer = student_model.layer4[-1]
     teacher_final_layer = teacher_model.module.stage_3.stage_3_bottleneck_2 # Grab the final layer of the model
 
-   
-    student_cam = GradCAM(model=student_model, target_layer=student_final_layer)
-    teacher_cam = GradCAM(model = teacher_model, target_layer = teacher_final_layer)
+    if algo == "GradCAM":
+        student_cam = GradCAM(model=student_model, target_layer=student_final_layer)
+        teacher_cam = GradCAM(model = teacher_model, target_layer = teacher_final_layer)
+    elif algo == "CAM":
+        student_cam = CAM(student_model, student_final_layer)
+        teacher_cam = CAM(teacher_model, teacher_final_layer)
+    else:
+        print("something went pretty wrong with the algorithm for heatmaps at the evaluation")            
     # compute metrics over the dataset
     with tqdm(total=len(dataloader)) as t:
         for i, (data_batch, labels_batch) in enumerate(dataloader):
@@ -2077,10 +2126,24 @@ def papereval(student_model, teacher_model, dataloader, metrics, params, experim
                 max_probs, max_indices = torch.max(teacher_pred_probs, dim=1)
                 
             # print("about to make evaluation teacher heatmap")
-                teacher_heatmap_batch = teacher_cam(data_batch,(8,8), mode = "eval")
-
-                # print("max indices "+str(max_indices))
-                student_heatmap_batch = student_cam(data_batch,(8,8),max_indices, "eval")
+                if algo == "GradCAM":
+                    teacher_heatmap_batch = teacher_cam(data_batch,(4,4), mode = "eval")
+                    student_heatmap_batch = student_cam(data_batch,(4,4),max_indices, "eval")
+                elif algo == "CAM":
+                    max_indices_list = max_indices.tolist()
+                    teacher_heatmap_batch = teacher_cam(scores = teacher_output_batch,class_idx= max_indices_list)
+                    student_heatmap_batch = student_cam(scores = student_output_batch, class_idx =max_indices_list)
+                    teacher_heatmap_stack = torch.stack(teacher_heatmap_batch, dim=0)    
+                    student_heatmap_stack = torch.stack(student_heatmap_batch,dim = 0)
+                    teacher_heatmap_stack = F.interpolate(teacher_heatmap_stack, size=(4,4), mode='bilinear', align_corners=True)
+                    teacher_heatmap_stack = teacher_heatmap_stack.squeeze()
+                    student_heatmap_stack = student_heatmap_stack.squeeze()
+                #print("teacher stack shape "+str(teacher_heatmap_stack.shape))
+                #print("teacher heatmap batch shape "+str(teacher_heatmap_batch.shape))
+                #print("student heatmap batch shape "+str(student_heatmap_batch.shape))
+                            
+                else:
+                    print("something went wrong with the heatma algorithm choice when generating the batch of heatmaps in eval ")    
 
                 # print("made teacher and student heatmap batches")
 
@@ -2090,10 +2153,10 @@ def papereval(student_model, teacher_model, dataloader, metrics, params, experim
 
             with torch.no_grad():
             #print("attempting loss")  
-                kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_batch, teacher_heatmap_batch)
+                kl_loss, heatmap_dissimilarity = loss_fn_kd_nothresh(student_output_batch, labels_batch, teacher_output_batch, params, student_heatmap_stack, teacher_heatmap_stack)
                 #print("loss made")
                 heatmapbeta = 1-KLDgamma
-                combinedLossTensor = KLDgamma * kl_loss + heatmapbeta * heatmap_dissimilarity
+                combinedLossTensor = KLDgamma * kl_loss +(100* (heatmapbeta * heatmap_dissimilarity))
                 
 
             # running_loss += loss.item() # sum up batch loss
@@ -2151,7 +2214,7 @@ def papereval(student_model, teacher_model, dataloader, metrics, params, experim
 
 
 def paper_traineval(student_model, teacher_model, train_dataloader, val_dataloader, optimizer,    #  loss_fn_kd_nothresh, metrics, params, model_dir, restore_file, runconfig)
-                       loss_fn_kd_nothresh, metrics, params, student_arch, teacher_arch, restore_file=None,experiment='TrueClass', KLDgamma=1, wandbrun= False):
+                       loss_fn_kd_nothresh, metrics, params, student_arch, teacher_arch, restore_file=None,experiment='TrueClass', KLDgamma=1, wandbrun= False, algo = 'Grad-CAM'):
     """Train the model and evaluate every epoch.
     Args:
         model: (torch.nn.Module) the neural network
@@ -2169,6 +2232,8 @@ def paper_traineval(student_model, teacher_model, train_dataloader, val_dataload
 #grid = torchvision.utils.make_grid(images)
 
     print("batch size "+str(params["batch_size"]))
+    print("number of epochs "+str(params["num_epochs"]))
+    print("Algorithm for heatmaps "+str(algo))
     best_val_acc = 0.0
     
    # student_final_layer = student_model.layer4[-1]
@@ -2181,10 +2246,10 @@ def paper_traineval(student_model, teacher_model, train_dataloader, val_dataload
 
     # learning rate schedulers for different models:
     if params.model_version == "resnet18_distill":
-        scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+        scheduler = StepLR(optimizer, step_size=25, gamma=0.1)
     # for cnn models, num_epoch is always < 100, so it's intentionally not using scheduler here
     elif params.model_version == "cnn_distill":
-        scheduler = StepLR(optimizer, step_size=30, gamma=0.2)
+        scheduler = StepLR(optimizer, step_size=25, gamma=0.2)
     if KLDgamma == 1: 
         print("KLD gamma = 1:  heatmap dissimilarity will be tracked but will have no impact on the loss calculation")
         
@@ -2203,7 +2268,7 @@ def paper_traineval(student_model, teacher_model, train_dataloader, val_dataload
         # compute number of batches in one epoch (one full pass over the training set)
         if experiment != 'NoHeatmap':
             paperloop_nothresh(student_model, teacher_model, optimizer, loss_fn_kd_nothresh, train_dataloader,
-                metrics, params, experiment, KLDgamma, wandbrun)
+                metrics, params, experiment, KLDgamma, wandbrun, algo)
             #  wandb.log({"epoch":epoch})
 
         else:
@@ -2214,7 +2279,7 @@ def paper_traineval(student_model, teacher_model, train_dataloader, val_dataload
         student_activated_features = 1
         teacher_activated_features = 1
         val_metrics = papereval(student_model, teacher_model, val_dataloader, metrics, params, experiment, 
-                                  KLDgamma)
+                                  KLDgamma, algo)
         #print("memory summary after evaluating")
         #print(torch.cuda.memory_summary())
         
@@ -2300,11 +2365,9 @@ def paper_traineval(student_model, teacher_model, train_dataloader, val_dataload
         # tag = tag.replace('.', '/')
         #  board_logger.histo_summary(tag, value.data.cpu().numpy(), epoch+1)
         # board_logger.histo_summary(tag+'/grad', value.grad.data.cpu().numpy(), epoch+1)
+    print("Finished traineval loop")
 
 
-
-    teacher_activated_features.remove()
-    student_activated_features.remove()
 
 
 def modelrun(model, teacher_model, train_dataloader, val_dataloader, optimizer,
@@ -2910,7 +2973,7 @@ random.seed(230)
 torch.manual_seed(230)
 if params.cuda: torch.cuda.manual_seed(230)
 
-params.batch_size = 100
+params.batch_size = 128
 
 #train_dl = fetch_dataloader('train', params)
 #val_dl = fetch_dataloader('dev', params)
@@ -2979,23 +3042,39 @@ if params.cuda: torch.cuda.manual_seed(230)
 
 params.cuda
 
+# kd_data = {
+#     "model_version": "resnet18_distill",
+#     "subset_percent": 1,
+#     "augmentation": "yes",
+#     "teacher": "resnext",
+#     "alpha": 0.95,
+#     "temperature": 6,
+#     "learning_rate": 1e-1,
+#     "batch_size": 128,
+#     "num_epochs": 175,
+#     "dropout_rate": 0.0,
+#     "num_channels": 32,
+#     "save_summary_steps": 100,
+#     "num_workers":4
+# }
+
 kd_data = {
     "model_version": "resnet18_distill",
-    "subset_percent": 1,
+    "subset_percent": 0.1,
     "augmentation": "yes",
     "teacher": "resnext",
     "alpha": 0.95,
     "temperature": 6,
     "learning_rate": 1e-1,
     "batch_size": 128,
-    "num_epochs": 175,
+    "num_epochs": 40,
     "dropout_rate": 0.0,
     "num_channels": 32,
     "save_summary_steps": 100,
     "num_workers":4
 }
 params = DotDict(kd_data)
-
+params.num_epochs = 40
 params.batch_size =128
 
 class SaveFeatures():
@@ -3214,7 +3293,8 @@ def modelrun(model, teacher_model, train_dataloader, val_dataloader, optimizer,
     elif usethresh == False:
         print("doing KD run without threshold")
         
-        
+params.num_epochs =50
+params.subset_percent = 1        
 def nothreshsweeprun(config=None):
   with wandb.init(config=config):
        # print("line before config")
@@ -3223,8 +3303,9 @@ def nothreshsweeprun(config=None):
         params = DotDict(kd_data)
         #print("line before params.cuda")
         params.cuda = torch.cuda.is_available()
-        params.num_epochs = 20
+        params.num_epochs = 50
         params.batch_size = 128
+        #params.subset_percent = 0.1 
 
 # Set the random seed for reproducible experiments
         random.seed(230)
@@ -3234,8 +3315,8 @@ def nothreshsweeprun(config=None):
         student_model.to(device)
         print("student model initialised from scratch")
         #train_dl = fetch_subset_dataloader('train', params)
-       
         #val_dl = fetch_subset_dataloader('dev', params)
+        
         train_dl = fetch_dataloader('train', params)
         val_dl = fetch_dataloader('dev', params)
         #print("initialising teacher model")
@@ -3260,7 +3341,7 @@ def nothreshsweeprun(config=None):
        # print("line before calling train and evaluate")
         #print("beginning train and evaluate loop")
         paper_traineval(student_model, teacher_model, train_dl, val_dl, optimizer,
-                       loss_fn_kd_nothresh, metrics, params, "resnet18", "resnext29",  restore_file,experiment = config.experiment, KLDgamma= config.KLDgamma, wandbrun= True)
+                       loss_fn_kd_nothresh, metrics, params, "resnet18", "resnext29",  restore_file,experiment = config.experiment, KLDgamma= config.KLDgamma, wandbrun= True, algo= "CAM")
 #        train_and_evaluate_kd_nothresh(student_model, teacher_model, train_dl, val_dl, optimizer,
  #                      loss_fn_kd_nothresh, metrics, params, restore_file, experiment =config.experiment, KLDgamma = config.KLDgamma, wandbrun = True )
 
@@ -3280,8 +3361,7 @@ def nothreshsweeprun(config=None):
 #     "save_summary_steps": 100,
 #     "num_workers": 4
 # }
-params.num_epochs =20
-params.subset_percent = 0.70
+
 #params = DotDict(res18kdparams)
 
 sweep_configuration_nothresh = {
@@ -3299,7 +3379,7 @@ sweep_configuration_nothresh = {
     'parameters': {
         #'KLDgamma': {'values': [0.3, 0.5, 0.75, 1.0]},
         #'KLDgamma': {'values': [0.3, 0.25, 0.2, 0.15]},#
-        'KLDgamma': {'values': [0, 0.4, 0.75]},#
+        'KLDgamma': {'values': [0, 0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0]},#
         #'threshold': {'values': [0.3, 0.4, 0.5, 0.75]}
         'experiment': {'values': ['TopClass']}
      
@@ -3308,7 +3388,7 @@ sweep_configuration_nothresh = {
 
 
 
-nothreshsweep_id =wandb.sweep(sweep_configuration_nothresh, project="tensorlossruns")
+nothreshsweep_id =wandb.sweep(sweep_configuration_nothresh, project="camruns")
 print("performing no threshold hyperparameter search")
 wandb.agent(nothreshsweep_id, nothreshsweeprun) 
 
@@ -3459,44 +3539,44 @@ def fullkdtrainrun(projectname, config=None ):
    
    
 
-def fullbasetrainrun(projectname, config=None ):
-  with wandb.init(config=config,resume=False, project = projectname):
-       # print("line before config")
-        config = wandb.config
-        #print("line before dotdict")
-        #params = DotDict(kd_data)
-        #print("line before params.cuda")
-        params.cuda = torch.cuda.is_available()
+# def fullbasetrainrun(projectname, config=None ):
+#   with wandb.init(config=config,resume=False, project = projectname):
+#        # print("line before config")
+#         config = wandb.config
+#         #print("line before dotdict")
+#         #params = DotDict(kd_data)
+#         #print("line before params.cuda")
+#         params.cuda = torch.cuda.is_available()
 
-# Set the random seed for reproducible experiments
-        random.seed(230)
-        torch.manual_seed(230)
-        if params.cuda: torch.cuda.manual_seed(230)
-        student_model = ResNet18().cuda() if params.cuda else ResNet18()
-        print("student model initialised from scratch")
-        train_dl = fetch_dataloader('train', params)
-        val_dl = fetch_dataloader('dev', params)
-        #train_dl = fetch_dataloader('train', params)
-       # val_dl = fetch_dataloader('dev', params)
-        teacher_model = CifarResNeXt(cardinality=8, depth=29, num_classes=10)
-        teacher_checkpoint = '/bin/smartinez/best.pth.tar'
-        teacher_model = nn.DataParallel(teacher_model).cuda()
-        teacher_model.to(device);
-        load_checkpoint(teacher_checkpoint, teacher_model);
-        optimizer = optim.SGD(student_model.parameters(), lr=params.learning_rate,
-                      momentum=0.9, weight_decay=5e-4)
-        model_dir = '/bin/smartinez/resnet18basetest'
-        restore_file = None
-        #experiment = 'AllClasses'
-        #KLDgamma = 0.3 #0.3 is the best but 1.0 is for the control experiment
+# # Set the random seed for reproducible experiments
+#         random.seed(230)
+#         torch.manual_seed(230)
+#         if params.cuda: torch.cuda.manual_seed(230)
+#         student_model = ResNet18().cuda() if params.cuda else ResNet18()
+#         print("student model initialised from scratch")
+#         train_dl = fetch_dataloader('train', params)
+#         val_dl = fetch_dataloader('dev', params)
+#         #train_dl = fetch_dataloader('train', params)
+#        # val_dl = fetch_dataloader('dev', params)
+#         teacher_model = CifarResNeXt(cardinality=8, depth=29, num_classes=10)
+#         teacher_checkpoint = '/bin/smartinez/best.pth.tar'
+#         teacher_model = nn.DataParallel(teacher_model).cuda()
+#         teacher_model.to(device);
+#         load_checkpoint(teacher_checkpoint, teacher_model);
+#         optimizer = optim.SGD(student_model.parameters(), lr=params.learning_rate,
+#                       momentum=0.9, weight_decay=5e-4)
+#         model_dir = '/bin/smartinez/resnet18basetest'
+#         restore_file = None
+#         #experiment = 'AllClasses'
+#         #KLDgamma = 0.3 #0.3 is the best but 1.0 is for the control experiment
         
-        metrics = {
-    'accuracy': accuracy
-    # could add more metrics such as accuracy for each token type
-}       
-        train_and_evaluate(student_model, train_dl, val_dl, optimizer, loss_fn, metrics, params,
-                           model_dir, restore_file, wandbrun = True) 
-       # print("line before calling train and evaluate")
+#         metrics = {
+#     'accuracy': accuracy
+#     # could add more metrics such as accuracy for each token type
+# }       
+#         train_and_evaluate(student_model, train_dl, val_dl, optimizer, loss_fn, metrics, params,
+#                            model_dir, restore_file, wandbrun = True) 
+#        # print("line before calling train and evaluate")
         
 
 # res18baseparams = {
@@ -3525,7 +3605,7 @@ res18baseconfig ={
     } 
 
 projectname = "base vanilla train runs"
-fullbasetrainrun("base vanilla train runs", res18baseconfig)  
+#fullbasetrainrun("base vanilla train runs", res18baseconfig)  
 #fulltrainrun("fulltrainruns", config)     
 #teacher_model = CifarResNeXt(cardinality=8, depth=29, num_classes=10)
 #teacher_checkpoint = 'experiments/base_resnext29/best.pth.tar'
